@@ -1,0 +1,389 @@
+<!--
+Plant Care Assistant — Single-file HTML Prototype
+Features:
+- Local sample plant dataset with autocomplete + search button
+- Plant details view (image, water/sun/soil guidance)
+- Add plant to user collection (nickname, location, acquired date)
+- Reminders (water) stored in localStorage; simple repeating every N days
+- Reminder checker while app is open + browser Notification API
+- Weather check via Open-Meteo (uses geolocation or manual coords) to provide watering suggestions
+- Export / Import collection JSON
+
+How to use:
+1. Save this file as plant-care-assistant.html
+2. Open in a modern browser (Chrome, Firefox, Edge).
+3. Type a plant name and use autocomplete or click Search to pick the first match.
+4. View plant details, then click "Add to My Plants" to save it to your collection.
+5. On a saved plant, set a watering interval (days). The app checks reminders every minute when open and will show notifications if permission granted.
+6. Use Export / Import to backup or restore your collection.
+
+Notes:
+- This is an offline-friendly prototype. Replace the sample dataset with a real API (Trefle) by implementing fetchSuggestions() and fetchPlantById().
+- For reliable background reminders on mobile, convert to a PWA and add server-side push or background sync.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Plant Care Assistant (Prototype)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+  :root{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial;}
+  body{margin:0;background:#f4f7fb;color:#0b1723;padding:18px}
+  .wrap{max-width:1000px;margin:0 auto;background:white;border-radius:12px;padding:18px;box-shadow:0 8px 30px rgba(10,20,40,.06)}
+  h1{margin:0 0 8px;font-size:20px}
+  .row{display:flex;gap:12px;align-items:center}
+  .col{flex:1}
+  label{display:block;font-size:13px;color:#466275;margin-bottom:6px}
+  input,select,textarea,button{font-size:14px}
+  input,select,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid #e6eef6;background:#f9fbfd}
+  button{padding:10px 12px;border-radius:8px;border:0;background:#0b85ff;color:white;cursor:pointer}
+  .btn-ghost{background:transparent;border:1px solid #e6eef6;color:#0b1723}
+  .card{padding:12px;border-radius:10px;background:#f8fbff;border:1px solid #eef6fb}
+  .suggestions{position:relative}
+  .list{position:absolute;left:0;right:0;top:46px;background:white;border:1px solid #e6eef6;border-radius:8px;max-height:220px;overflow:auto;z-index:40}
+  .item{padding:8px 10px;border-bottom:1px dashed #eef6fb;cursor:pointer}
+  .item:hover{background:#f0f8ff}
+  .small{font-size:13px;color:#6b8aa0}
+  .plants-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
+  .plant-card{border-radius:8px;border:1px solid #e6eef6;padding:10px;background:white}
+  .plant-card img{width:100%;height:120px;object-fit:cover;border-radius:6px}
+  .meta{font-size:13px;color:#4b6b80}
+  .controls{display:flex;gap:8px;margin-top:8px}
+  pre{background:#f3f8fb;padding:10px;border-radius:8px;overflow:auto}
+  footer{font-size:13px;color:#6b8aa0;margin-top:14px}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Plant Care Assistant — Prototype</h1>
+    <p class="small">Search plants, save to your collection, set watering reminders, and get weather-informed suggestions.</p>
+
+    <div class="card">
+      <div class="row">
+        <div class="col">
+          <label for="search">Search Plants</label>
+          <div class="suggestions">
+            <input id="search" placeholder="Type a plant name (e.g. Aloe, Monstera)" autocomplete="off" />
+            <div id="suggestionsList" class="list" style="display:none"></div>
+          </div>
+        </div>
+        <div style="width:120px">
+          <label>&nbsp;</label>
+          <button id="searchBtn">Search</button>
+        </div>
+      </div>
+
+      <div style="margin-top:12px" id="selectedCard"></div>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:300px" class="card">
+        <h3 style="margin:0 0 10px">My Plants</h3>
+        <div id="myPlants" class="plants-grid"></div>
+        <div style="margin-top:8px" class="controls">
+          <button id="exportBtn" class="btn-ghost">Export JSON</button>
+          <button id="importBtn" class="btn-ghost">Import JSON</button>
+          <input id="importFile" type="file" accept="application/json" style="display:none" />
+        </div>
+      </div>
+
+      <div style="width:360px;min-width:260px" class="card">
+        <h3 style="margin:0 0 10px">Weather & Suggestions</h3>
+        <p class="small">Get watering suggestions based on recent rain (last 24h). Allow geolocation for automatic checks or enter coordinates below.</p>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="geoBtn" class="btn-ghost">Use My Location</button>
+          <button id="checkWeatherBtn">Check Weather</button>
+        </div>
+        <label>Manual lat,lon</label>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <input id="lat" placeholder="lat" />
+          <input id="lon" placeholder="lon" />
+        </div>
+        <div id="weatherResult" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <footer>Prototype — replace sample dataset with a plant API for production (e.g. Trefle). Reminders fire when the app is open. For background reminders convert to a PWA with push notifications.</footer>
+  </div>
+
+<script>
+// Sample plant dataset (replace with API calls as needed)
+const SAMPLE_PLANTS = [
+  { id: 'p1', common: 'Aloe Vera', scientific: 'Aloe vera', image: 'https://images.unsplash.com/photo-1524594154902-3a3f2a0f3b47?auto=format&fit=crop&w=800&q=60', water: 'low', sunlight: 'partial', soil: 'well-drained', notes: 'Succulent, drought-tolerant.' },
+  { id: 'p2', common: 'Monstera', scientific: 'Monstera deliciosa', image: 'https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=800&q=60', water: 'moderate', sunlight: 'indirect', soil: 'loamy', notes: 'Prefers humidity.' },
+  { id: 'p3', common: 'Snake Plant', scientific: 'Sansevieria trifasciata', image: 'https://images.unsplash.com/photo-1516077190333-7e6f2ae6a2b9?auto=format&fit=crop&w=800&q=60', water: 'low', sunlight: 'low to bright', soil: 'well-drained', notes: 'Very low maintenance.' },
+  { id: 'p4', common: 'Peace Lily', scientific: 'Spathiphyllum', image: 'https://images.unsplash.com/photo-1528150177502-45b2c6f990d2?auto=format&fit=crop&w=800&q=60', water: 'moderate', sunlight: 'low to indirect', soil: 'moist', notes: 'Shows droop when thirsty.' },
+  { id: 'p5', common: 'Basil', scientific: 'Ocimum basilicum', image: 'https://images.unsplash.com/photo-1518977956819-0e50a6b7d4d6?auto=format&fit=crop&w=800&q=60', water: 'moderate', sunlight: 'full sun', soil: 'well-drained', notes: 'Herb for kitchen.' },
+];
+
+// Storage keys
+const STORAGE_KEY = 'plantcare.userplants.v1';
+
+// State
+let suggestions = [];
+let selectedPlant = null;
+let userPlants = loadUserPlants();
+
+// Utils
+function el(id){ return document.getElementById(id); }
+function debounce(fn,ms=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); } }
+function uuid(){ return 'id-'+Math.random().toString(36).slice(2,9); }
+
+// Autocomplete & search (uses SAMPLE_PLANTS; replace fetchSuggestions to use API)
+async function fetchSuggestions(query){
+  if(!query) return [];
+  const q = query.toLowerCase();
+  // simple substring match (common or scientific)
+  return SAMPLE_PLANTS.filter(p=>p.common.toLowerCase().includes(q) || (p.scientific && p.scientific.toLowerCase().includes(q))).slice(0,8);
+}
+
+async function fetchPlantById(id){
+  return SAMPLE_PLANTS.find(p=>p.id===id) || null;
+}
+
+const searchInput = el('search');
+const suggestionsList = el('suggestionsList');
+
+async function showSuggestions(q){
+  const list = await fetchSuggestions(q);
+  suggestions = list;
+  suggestionsList.innerHTML = '';
+  if(!list.length){ suggestionsList.style.display='none'; return; }
+  list.forEach(it=>{
+    const d = document.createElement('div'); d.className='item';
+    d.innerHTML = `<strong>${it.common}</strong><div class="small">${it.scientific||''}</div>`;
+    d.onclick = ()=> selectPlant(it);
+    suggestionsList.appendChild(d);
+  });
+  suggestionsList.style.display='block';
+}
+
+const debouncedSuggestions = debounce((v)=> showSuggestions(v), 250);
+searchInput.addEventListener('input', e=> debouncedSuggestions(e.target.value));
+
+// search button -> pick first suggestion if available
+el('searchBtn').addEventListener('click', async ()=>{
+  const q = searchInput.value.trim();
+  if(!q) return;
+  const list = await fetchSuggestions(q);
+  if(list.length) selectPlant(list[0]); else alert('No plant found in sample set.');
+});
+
+// Select plant
+function selectPlant(p){
+  selectedPlant = p;
+  suggestionsList.style.display='none';
+  searchInput.value = p.common;
+  renderSelectedCard(p);
+}
+
+function renderSelectedCard(p){
+  const container = el('selectedCard');
+  container.innerHTML = `
+    <div style="display:flex;gap:12px;align-items:start">
+      <img src="${p.image}" style="width:120px;height:100px;object-fit:cover;border-radius:6px" />
+      <div style="flex:1">
+        <div style="font-weight:700">${p.common}</div>
+        <div class="small">${p.scientific||''}</div>
+        <div class="meta" style="margin-top:8px">${p.notes}</div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <button id="addBtn">Add to My Plants</button>
+          <button id="detailsBtn" class="btn-ghost">View Details</button>
+        </div>
+      </div>
+    </div>
+  `;
+  el('addBtn').onclick = ()=> openAddDialog(p);
+  el('detailsBtn').onclick = ()=> openDetailsDialog(p);
+}
+
+function openDetailsDialog(p){
+  alert(`${p.common} — ${p.scientific}\n\nSunlight: ${p.sunlight}\nWater: ${p.water}\nSoil: ${p.soil}\n\n${p.notes}`);
+}
+
+function openAddDialog(p){
+  const nickname = prompt('Nickname for your plant (optional)', p.common) || p.common;
+  const loc = prompt('Location (e.g. balcony, kitchen)', 'indoor') || 'indoor';
+  const intervalDays = parseInt(prompt('Default watering interval in days', p.water==='low'? '14':'7'),10) || 7;
+  const userPlant = {
+    id: uuid(),
+    plantId: p.id,
+    common: p.common,
+    scientific: p.scientific,
+    image: p.image,
+    nickname,
+    location: loc,
+    acquiredDate: new Date().toISOString(),
+    intervalDays,
+    lastWatered: null,
+    reminders: []
+  };
+  userPlants.push(userPlant);
+  saveUserPlants();
+  renderMyPlants();
+  alert('Added to your plants. You can edit interval or mark watered from the card.');
+}
+
+// User plants rendering & actions
+function renderMyPlants(){
+  const container = el('myPlants');
+  container.innerHTML = '';
+  if(!userPlants.length){ container.innerHTML = '<div class="small">No plants yet. Add from the search box above.</div>'; return; }
+  userPlants.forEach(up=>{
+    const card = document.createElement('div'); card.className='plant-card';
+    const nextDue = computeNextDue(up.lastWatered, up.intervalDays);
+    const daysToNext = Math.ceil((new Date(nextDue) - new Date())/(1000*60*60*24));
+    card.innerHTML = `
+      <img src="${up.image}" alt="${up.common}" />
+      <div style="font-weight:700;margin-top:8px">${up.nickname}</div>
+      <div class="small">${up.common} — ${up.scientific||''}</div>
+      <div class="meta">Location: ${up.location}</div>
+      <div class="meta">Next watering: ${new Date(nextDue).toLocaleString()} (${daysToNext} days)</div>
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button class="btn-water" data-id="${up.id}">Watered Now</button>
+        <button class="btn-edit" data-id="${up.id}" class="btn-ghost">Edit</button>
+        <button class="btn-del" data-id="${up.id}" class="btn-ghost">Delete</button>
+      </div>
+      <div class="small" style="margin-top:8px">Interval: <input type="number" min="1" value="${up.intervalDays}" data-id="${up.id}" class="interval-input" style="width:64px;padding:6px;border-radius:6px;border:1px solid #eef6fb;background:#fff"/> days</div>
+    `;
+    container.appendChild(card);
+  });
+  // attach handlers
+  document.querySelectorAll('.btn-water').forEach(b=> b.onclick = (e)=>{ const id=e.target.dataset.id; markWateredNow(id); });
+  document.querySelectorAll('.btn-del').forEach(b=> b.onclick = (e)=>{ const id=e.target.dataset.id; if(confirm('Remove this plant?')){ userPlants = userPlants.filter(x=>x.id!==id); saveUserPlants(); renderMyPlants(); } });
+  document.querySelectorAll('.btn-edit').forEach(b=> b.onclick = (e)=>{ const id=e.target.dataset.id; editPlant(id); });
+  document.querySelectorAll('.interval-input').forEach(inp=> inp.onchange = (e)=>{ const id=e.target.dataset.id; const val=parseInt(e.target.value,10)||7; const up=userPlants.find(x=>x.id===id); if(up){ up.intervalDays=val; saveUserPlants(); renderMyPlants(); } });
+}
+
+function editPlant(id){
+  const up = userPlants.find(x=>x.id===id);
+  if(!up) return;
+  const nick = prompt('Nickname', up.nickname) || up.nickname;
+  const loc = prompt('Location', up.location) || up.location;
+  up.nickname = nick; up.location = loc; saveUserPlants(); renderMyPlants();
+}
+
+function markWateredNow(id){
+  const up = userPlants.find(x=>x.id===id);
+  if(!up) return;
+  up.lastWatered = new Date().toISOString();
+  saveUserPlants(); renderMyPlants();
+  alert(`${up.nickname} marked watered.`);
+}
+
+// Reminder logic
+function computeNextDue(lastWateredISO, intervalDays){
+  if(!lastWateredISO) return new Date(Date.now() + intervalDays*24*60*60*1000).toISOString();
+  const last = new Date(lastWateredISO);
+  const next = new Date(last.getTime() + intervalDays*24*60*60*1000);
+  return next.toISOString();
+}
+
+// Reminder checker: runs every 60 seconds while app open
+async function checkReminders(){
+  const now = new Date();
+  userPlants.forEach(up=>{
+    const next = new Date(computeNextDue(up.lastWatered, up.intervalDays));
+    if(next <= now){
+      // notify
+      notify(`Time to water ${up.nickname}`, `${up.common} — interval ${up.intervalDays} days`);
+      // do not auto-update lastWatered; let user mark as watered. Alternatively, schedule next reminder by pushing next forward.
+    }
+  });
+}
+setInterval(checkReminders, 60*1000);
+
+// Notifications
+async function requestNotificationPermission(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission === 'default') await Notification.requestPermission();
+}
+
+function notify(title, body){
+  // in-app toast
+  console.log('notify',title,body);
+  if('Notification' in window && Notification.permission === 'granted'){
+    new Notification(title, { body });
+  } else {
+    // fallback: alert small non-blocking
+    const n = document.createElement('div');
+    n.style.position='fixed'; n.style.right='20px'; n.style.bottom='20px'; n.style.background='#0b85ff'; n.style.color='white'; n.style.padding='10px 12px'; n.style.borderRadius='8px'; n.style.boxShadow='0 6px 18px rgba(11,133,255,.2)';
+    n.textContent = title + ' — ' + body;
+    document.body.appendChild(n);
+    setTimeout(()=>n.remove(), 5000);
+  }
+}
+
+// Weather integration (Open-Meteo)
+async function fetchWeather(lat, lon){
+  try{
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=precipitation&forecast_days=1&timezone=auto`;
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('weather fetch failed');
+    return await r.json();
+  }catch(e){ console.error(e); return null; }
+}
+
+el('geoBtn').addEventListener('click', ()=>{
+  if(!navigator.geolocation) return alert('Geolocation not supported');
+  navigator.geolocation.getCurrentPosition(async (pos)=>{
+    el('lat').value = pos.coords.latitude.toFixed(4);
+    el('lon').value = pos.coords.longitude.toFixed(4);
+    await doWeatherCheck();
+  }, (err)=> alert('Geolocation denied or unavailable'));
+});
+
+el('checkWeatherBtn').addEventListener('click', ()=> doWeatherCheck());
+
+async function doWeatherCheck(){
+  const lat = parseFloat(el('lat').value);
+  const lon = parseFloat(el('lon').value);
+  if(isNaN(lat) || isNaN(lon)) return alert('Enter valid coordinates or use geolocation');
+  el('weatherResult').innerHTML = '<div class="small">Checking weather...</div>';
+  const data = await fetchWeather(lat, lon);
+  if(!data) return el('weatherResult').innerHTML = '<div class="small">Failed to fetch weather.</div>';
+  // sum precipitation in hourly array
+  const prec = (data.hourly && data.hourly.precipitation) ? data.hourly.precipitation.reduce((a,b)=>a+b,0) : 0;
+  const msg = prec >= 2 ? `It rained ${prec.toFixed(2)} mm in the last period — consider skipping watering.` : `No significant rain (${prec.toFixed(2)} mm) — watering may be needed.`;
+  el('weatherResult').innerHTML = `<div class="meta">${msg}</div><pre>${JSON.stringify(data.hourly||{}, null, 2)}</pre>`;
+}
+
+// Export / Import
+el('exportBtn').addEventListener('click', ()=>{
+  const blob = new Blob([JSON.stringify(userPlants, null, 2)], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download='my-plants.json'; document.body.appendChild(a); a.click(); a.remove();
+});
+
+el('importBtn').addEventListener('click', ()=> el('importFile').click());
+el('importFile').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return; const reader = new FileReader();
+  reader.onload = ()=>{
+    try{ const imported = JSON.parse(reader.result); if(Array.isArray(imported)){ userPlants = imported; saveUserPlants(); renderMyPlants(); alert('Imported.'); } else alert('Invalid file format'); }catch(err){ alert('Failed to parse file'); }
+  };
+  reader.readAsText(f);
+});
+
+// Storage helpers
+function saveUserPlants(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(userPlants)); }
+function loadUserPlants(){ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }catch{return [];} }
+
+// Init
+(async function init(){
+  // request notifications permission politely
+  await requestNotificationPermission();
+  renderMyPlants();
+  // initial weather check placeholder
+  el('weatherResult').innerHTML = '<div class="small">No weather checked yet.</div>';
+  // check reminders immediately on load
+  checkReminders();
+})();
+
+// Click outside to close suggestions
+document.addEventListener('click', (e)=>{ if(!e.target.closest('.suggestions')) suggestionsList.style.display='none'; });
+
+</script>
+</body>
+</html>
